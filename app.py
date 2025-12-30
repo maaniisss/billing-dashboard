@@ -37,12 +37,11 @@ if uploaded_pdfs:
                 
                 # --- INTELLIGENT EXTRACTION ---
                 
-                # A. VR Number (Dono format handle karega)
-                # Dhoond raha hai: "VR No. 0058" ya "DV No.: 0058"
+                # A. VR Number
                 vr_match = re.search(r"(VR No\.|DV No\.:|VR No)\s*(\d+)", full_text)
                 vr_no = vr_match.group(2) if vr_match else "Not Found"
 
-                # B. Date (Dono format: "Date:-" aur "Date:")
+                # B. Date
                 date_match = re.search(r"Date:[-]?\s*(\d{2}-\d{2}-\d{4})", full_text)
                 date = date_match.group(1) if date_match else "Not Found"
 
@@ -50,37 +49,39 @@ if uploaded_pdfs:
                 amt_match = re.search(r"(Total of above Rs|DV Total:|Total Amount)\s*(\d+)", full_text)
                 amount = float(amt_match.group(2)) if amt_match else 0.0
 
-                # D. PARTY NAME LOGIC (Sabse Zaroori)
-                # Hum ginenge ki "Bank" kitni baar aaya hai.
-                # Salary bill mein bohot baar "State Bank" ya "Axis Bank" aata hai.
-                
-                bank_count = full_text.count("State Bank") + full_text.count("Axis Bank") + full_text.count("IFSC")
-                
+                # D. PARTY NAME LOGIC (IFSC Count Method)
+                # Hum IFSC Code pattern dhoondenge (4 letters + 0 + 6 chars)
+                # Example: SBIN0004088
+                ifsc_matches = re.findall(r'[A-Z]{4}0[A-Z0-9]{6}', full_text)
+                unique_ifsc = len(set(ifsc_matches)) # Duplicate hata kar gino
+
                 party_name = "Not Found"
-                
-                if bank_count > 2:
-                    # Agar 2 se zyada baar bank dikha, matlab ye Group/Salary bill hai
+                payment_type = "Vendor" # Default
+
+                if unique_ifsc > 1:
+                    # Agar 1 se zyada alag IFSC hain -> Salary Bill
                     party_name = "Salary/Group Payment (Multiple Parties)"
+                    payment_type = "Salary"
                 else:
-                    # Agar kam baar dikha, matlab Vendor bill hai -> Naam dhoondo
+                    # Agar 0 ya 1 IFSC hai -> Vendor Bill
+                    payment_type = "Vendor"
                     lines = full_text.split('\n')
                     for i, line in enumerate(lines):
-                        # Logic: Jahan IFSC code ya Bank likha ho, uske aas-paas naam hota hai
-                        if ("SBIN" in line or "IFSC" in line) and len(line) > 5:
-                            # Vendor bill mein naam aksar agli line mein hota hai
+                        # IFSC wali line dhoondo
+                        if any(code in line for code in ifsc_matches) or "SBIN" in line:
+                            # Vendor ka naam aksar agli line mein hota hai
                             if i + 1 < len(lines):
                                 potential_name = lines[i+1].strip()
-                                # Agar agli line number hai (Account No), to uske agli line check karo
-                                if potential_name.isdigit() or len(potential_name) < 3:
-                                    if i + 2 < len(lines):
-                                        party_name = lines[i+2].strip()
-                                else:
+                                # Agar naam valid lag raha ho (Number nahi hai)
+                                if not potential_name.isdigit() and len(potential_name) > 2:
                                     party_name = potential_name
-                            break
+                                    break
                     
-                    # Agar upar wala logic fail ho jaye, to "Remarks" check karo
-                    if party_name == "Not Found" or party_name == "":
-                        party_name = "Vendor Payment (Name Check Pending)"
+                    # Fallback: Agar naam nahi mila par Remarks mein kuch hai
+                    if party_name == "Not Found":
+                         # Remarks check (Sample logic)
+                         if "Remarks" in full_text:
+                             pass 
 
                 # Add to List
                 all_data.append({
@@ -89,7 +90,7 @@ if uploaded_pdfs:
                     "Party_Name": party_name,
                     "Amount": amount,
                     "File_Name": pdf_file.name,
-                    "Type": "Salary" if bank_count > 2 else "Vendor",
+                    "Type": payment_type,
                     "Status": "Pending"
                 })
                 
@@ -102,23 +103,12 @@ if uploaded_pdfs:
         if all_data:
             new_df = pd.DataFrame(all_data)
             
-            if existing_file:
-                try:
-                    old_df = pd.read_excel(existing_file)
-                    final_df = pd.concat([old_df, new_df], ignore_index=True)
-                    st.success("✅ Merge Successful!")
-                except:
-                    final_df = new_df
-                    st.warning("⚠️ Purani file corrupt thi, sirf naya data dikha raha hoon.")
-            else:
-                final_df = new_df
-                st.success("✅ Data Extraction Complete!")
+            # --- SHOW DATA ---
+            st.success("✅ Extraction Complete!")
+            st.subheader("📊 Final Data")
+            edited_df = st.data_editor(new_df, num_rows="dynamic")
 
-            # Editable Table
-            st.subheader("📊 Final Data (Aap yahan changes kar sakte hain)")
-            edited_df = st.data_editor(final_df, num_rows="dynamic")
-
-            # Download
+            # --- DOWNLOAD ---
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 edited_df.to_excel(writer, index=False)
